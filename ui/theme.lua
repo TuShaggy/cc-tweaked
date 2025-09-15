@@ -1,4 +1,4 @@
--- /ui/theme.lua
+-- ui/theme.lua
 -- Optional theme (loaded if present). Edit colors here to reskin the HUD.
 
 theme = {}
