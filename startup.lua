@@ -249,14 +249,19 @@ local function drawTopInfo()
   end
   if (ri.temperature or 0) > maxTemperature then reactor.stopReactor(); action="Temp > "..maxTemperature; emergencyTemp=true end
 
-  -- AUTO regulation (as before)
+  -- AUTO regulation with drop-back when field exceeds target
   if ri.status=="online" then
     if autoInputGate==1 then
-      local denom = 1 - (targetStrength/100)
-      if denom <= 0 then denom = 0.001 end
-      local fluxval = math.floor((ri.fieldDrainRate or 0) / denom + 0.5)
-      if fluxval < 0 then fluxval = 0 end
-      inputfluxgate.setSignalLowFlow(fluxval)
+      if fieldPct > targetStrength then
+        -- Allow the field to drain until it returns to the target
+        inputfluxgate.setSignalLowFlow(0)
+      else
+        local denom = 1 - (targetStrength/100)
+        if denom <= 0 then denom = 0.001 end
+        local fluxval = math.floor((ri.fieldDrainRate or 0) / denom + 0.5)
+        if fluxval < 0 then fluxval = 0 end
+        inputfluxgate.setSignalLowFlow(fluxval)
+      end
     else
       inputfluxgate.setSignalLowFlow(curInputGate)
     end
