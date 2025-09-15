@@ -277,7 +277,7 @@ local function drawBottomButtons()
   outHits = {}
   local outY = buttonsTopY
   -- spread arrows full width
-  local outMidY = (function() return (function() local blocks={"<<<"," <<"," < "," > ",">> ",">>>"} local total=0 for _,s in ipairs(blocks) do total=total+#s end total=total+(#blocks-1) local startX=2 local space=math.max(0, (monX-1 - startX +1 - total) // (#blocks+1)) local x=startX+space for _,s in ipairs(blocks) do f.draw_text(mon,x,outY+math.floor(BTN_ROW_H/2),s,colors.white,colors.gray) table.insert(outHits,{x1=x,x2=x+#s-1,y=outY+math.floor(BTN_ROW_H/2), delta=(s==" < " and -1000) or (s==" <<" and -10000) or (s=="<<<" and -100000) or (s==" > " and 1000) or (s==">> " and 10000) or (s==">>>" and 100000) or 0}) x=x+#s+space+1 end end)() end)()
+  local outMidY = (function() return (function() local blocks={"<<<"," <<"," < "," > ",">> ",">>>"} local total=0 for _,s in ipairs(blocks) do total=total+#s end total=total+(#blocks-1) local startX=2 local space=math.max(0, (monX-1 - startX +1 - total) / (#blocks+1)) local x=startX+space for _,s in ipairs(blocks) do f.draw_text(mon,x,outY+math.floor(BTN_ROW_H/2),s,colors.white,colors.gray) table.insert(outHits,{x1=x,x2=x+#s-1,y=outY+math.floor(BTN_ROW_H/2), delta=(s==" < " and -1000) or (s==" <<" and -10000) or (s=="<<<" and -100000) or (s==" > " and 1000) or (s==">> " and 10000) or (s==">>>" and 100000) or 0}) x=x+#s+space+1 end end)() end)()
 
   -- INPUT row (with AUTO/MANUAL toggle centered)
   drawBottomRow(buttonsTopY + BTN_ROW_H + BTN_SPACING)
