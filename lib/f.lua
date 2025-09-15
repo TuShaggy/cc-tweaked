@@ -1,66 +1,61 @@
--- /lib/f.lua
--- Small drawing + peripheral helpers for CC:Tweaked
+-- lib/f.lua  (unchanged utility lib used by the controller)
 
--- peripheral search by type (returns wrapped or nil)
+-- peripheral identification
 function periphSearch(ptype)
   local names = peripheral.getNames()
-  for _, n in ipairs(names) do
-    if peripheral.getType(n) == ptype then
-      return peripheral.wrap(n)
+  for _, name in pairs(names) do
+    if peripheral.getType(name) == ptype then
+      return peripheral.wrap(name)
     end
   end
   return nil
 end
 
--- int format with thousands separators
-function format_int(n)
-  if n == nil then n = 0 end
-  local s = tostring(math.floor(n + 0.5))
-  local neg = s:sub(1,1)=="-"
-  if neg then s = s:sub(2) end
-  local out = s:reverse():gsub("(%d%d%d)","%1,"):reverse():gsub("^,","")
-  return (neg and "-" or "")..out
+-- formatting
+function format_int(number)
+  if number == nil then number = 0 end
+  local i, j, minus, int, fraction = tostring(number):find('([-]?)(%d+)([.]?%d*)')
+  int = int:reverse():gsub("(%d%d%d)", "%1,")
+  return minus .. int:reverse():gsub("^,", "") .. fraction
 end
 
--- monitor text helpers
-function draw_text(mon, x, y, text, tc, bc)
-  mon.monitor.setBackgroundColor(bc)
-  mon.monitor.setTextColor(tc)
+-- monitor related
+function draw_text(mon, x, y, text, text_color, bg_color)
+  mon.monitor.setBackgroundColor(bg_color)
+  mon.monitor.setTextColor(text_color)
   mon.monitor.setCursorPos(x,y)
   mon.monitor.write(text)
 end
 
-function draw_text_right(mon, offset, y, text, tc, bc)
-  mon.monitor.setBackgroundColor(bc)
-  mon.monitor.setTextColor(tc)
+function draw_text_right(mon, offset, y, text, text_color, bg_color)
+  mon.monitor.setBackgroundColor(bg_color)
+  mon.monitor.setTextColor(text_color)
   mon.monitor.setCursorPos(mon.X - string.len(tostring(text)) - offset, y)
   mon.monitor.write(text)
 end
 
-function draw_text_lr(mon, x, y, offset, left, right, ltc, rtc, bc)
-  draw_text(mon, x, y, left, ltc, bc)
-  draw_text_right(mon, offset, y, right, rtc, bc)
+function draw_text_lr(mon, x, y, offset, text1, text2, text1_color, text2_color, bg_color)
+  draw_text(mon, x, y, text1, text1_color, bg_color)
+  draw_text_right(mon, offset, y, text2, text2_color, bg_color)
 end
 
--- solid line (spaces)
-function draw_line(mon, x, y, len, color)
-  if len < 0 then len = 0 end
+function draw_line(mon, x, y, length, color)
+  if length < 0 then length = 0 end
   mon.monitor.setBackgroundColor(color)
   mon.monitor.setCursorPos(x,y)
-  mon.monitor.write(string.rep(" ", len))
+  mon.monitor.write(string.rep(" ", length))
 end
 
--- progress bar
-function progress_bar(mon, x, y, length, value, max, bar, bg)
-  draw_line(mon, x, y, length, bg)
-  local size = 0
-  if max > 0 then size = math.floor((value/max) * length) end
-  draw_line(mon, x, y, size, bar)
+function progress_bar(mon, x, y, length, minVal, maxVal, bar_color, bg_color)
+  draw_line(mon, x, y, length, bg_color)
+  local barSize = 0
+  if maxVal > 0 then barSize = math.floor((minVal/maxVal) * length) end
+  draw_line(mon, x, y, barSize, bar_color)
 end
 
--- clear both term and monitor window
 function clear(mon)
-  term.clear(); term.setCursorPos(1,1)
+  term.clear()
+  term.setCursorPos(1,1)
   mon.monitor.setBackgroundColor(colors.black)
   mon.monitor.clear()
   mon.monitor.setCursorPos(1,1)
