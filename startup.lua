@@ -159,7 +159,11 @@ local function buttons()
 
     -- Toggle hit test
     if toggleHit and y==toggleHit.y and x>=toggleHit.x1 and x<=toggleHit.x2 then
+      local wasAuto = autoInputGate
       autoInputGate = 1 - autoInputGate
+      if wasAuto == 1 then -- switching to manual, preserve current flow
+        curInputGate = inputfluxgate.getSignalLowFlow()
+      end
       save_config()
       handled = true
     end
@@ -249,11 +253,11 @@ local function drawTopInfo()
   end
   if (ri.temperature or 0) > maxTemperature then reactor.stopReactor(); action="Temp > "..maxTemperature; emergencyTemp=true end
 
-  -- AUTO regulation with drop-back when field exceeds target
+  -- AUTO regulation aiming to hold the field at targetStrength
   if ri.status=="online" then
     if autoInputGate==1 then
       if fieldPct > targetStrength then
-        -- Allow the field to drain until it returns to the target
+        -- Cut input flow to let the field drain back to the target
         inputfluxgate.setSignalLowFlow(0)
       else
         local denom = 1 - (targetStrength/100)
