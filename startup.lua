@@ -4,23 +4,35 @@
 --   flow = fieldDrainRate / (1 - targetStrength/100)
 -- Features:
 --  - Gate picker (INPUT/OUTPUT) on first run or if missing
---  - AUTO/MANUAL for input gate (AUTO tries to keep targetStrength)
+--  - AUTO/MANUAL for input gate (AUTO keeps targetStrength)
 --  - Smooth, flicker-free monitor redraw
---  - Separate control loop (updates AUTO setpoint ~every 0.1s)
---  - Safety shutdowns for low field, high temp, low fuel
+--  - Separate control loop (~0.1s) for AUTO input
+--  - Safety shutdowns: low field, high temp, low fuel
 -- ============================================
 
 -- === Modifiable ===
 local reactorSide        = "back"
-local targetStrength     = 50    -- % field target in AUTO
+local targetStrength     = 50
 local maxTemperature     = 8000
 local safeTemperature    = 3000
 local lowestFieldPercent = 15
-local activateOnCharged  = 1     -- auto-activate when charged
+local activateOnCharged  = 1
+
+-- === Load lib/f (robusto: acepta lib/f o lib/f.lua) ===
+local function loadF()
+  if fs.exists("lib/f") then
+    local ok, err = pcall(os.loadAPI, "lib/f")
+    if not ok then error("Failed to load lib/f: "..tostring(err)) end
+  elseif fs.exists("lib/f.lua") then
+    local ok, err = pcall(os.loadAPI, "lib/f.lua")
+    if not ok then error("Failed to load lib/f.lua: "..tostring(err)) end
+  else
+    error("Missing lib/f (or lib/f.lua). Run installer first.")
+  end
+end
+loadF()
 
 -- === Do not edit below ===
-os.loadAPI("lib/f")
-
 local version       = "0.60-optimized"
 local autoInputGate = 1          -- 1=AUTO, 0=MANUAL
 local curInputGate  = 222000     -- manual setpoint (rf/t)
@@ -39,7 +51,7 @@ local action          = "None since reboot"
 local emergencyCharge = false
 local emergencyTemp   = false
 
--- Saved names
+-- Saved gate names
 local savedInputGateName, savedOutputGateName = nil, nil
 
 -- === Config I/O ===
@@ -104,24 +116,20 @@ local function menuPick(title, options, preselect)
 end
 
 local function ensureGates()
-  -- Try to use saved names first
-  if savedInputGateName then inputGate  = peripheral.wrap(savedInputGateName) end
-  if savedOutputGateName then outputGate= peripheral.wrap(savedOutputGateName) end
-
+  if savedInputGateName  then inputGate  = peripheral.wrap(savedInputGateName) end
+  if savedOutputGateName then outputGate = peripheral.wrap(savedOutputGateName) end
   if inputGate and outputGate then return end
 
   local gates = detectFlowGates()
   if #gates < 2 then error("Need at least 2 flow gates (get/setSignalLowFlow).") end
 
-  print("")
-  print("Select gate that FEEDS the reactor field (INPUT to reactor).")
+  print("\nSelect gate that FEEDS the reactor field (INPUT to reactor).")
   local inName = menuPick("INPUT Flow Gate", gates, savedInputGateName)
 
   local remaining = {}
   for _, n in ipairs(gates) do if n ~= inName then table.insert(remaining, n) end end
 
-  print("")
-  print("Select gate that EXTRACTS energy FROM the reactor (OUTPUT).")
+  print("\nSelect gate that EXTRACTS energy FROM the reactor (OUTPUT).")
   local outName = menuPick("OUTPUT Flow Gate", remaining, savedOutputGateName)
 
   savedInputGateName  = inName
@@ -152,7 +160,7 @@ mon = { monitor = monitor, X = monX, Y = monY }
 load_config()
 ensureGates()
 
--- === Buttons (same layout as original) ===
+-- === Buttons (layout como original) ===
 local function drawButtons(y)
   f.draw_text(mon,  2, y, " < ",  colors.white, colors.gray)
   f.draw_text(mon,  6, y, " <<",  colors.white, colors.gray)
@@ -166,7 +174,7 @@ local function buttons()
   while true do
     local _, _, xPos, yPos = os.pullEvent("monitor_touch")
 
-    -- OUTPUT gate controls
+    -- OUTPUT
     if yPos == 8 then
       local c = outputGate.getSignalLowFlow()
       if     xPos >=  2 and xPos <=  4 then c = c - 1000
@@ -180,7 +188,7 @@ local function buttons()
       outputGate.setSignalLowFlow(c)
     end
 
-    -- INPUT gate controls (manual only)
+    -- INPUT (manual)
     if yPos == 10 and autoInputGate == 0 and xPos ~= 14 and xPos ~= 15 then
       if     xPos >=  2 and xPos <=  4 then curInputGate = curInputGate - 1000
       elseif xPos >=  6 and xPos <=  9 then curInputGate = curInputGate - 10000
@@ -203,7 +211,7 @@ local function buttons()
   end
 end
 
--- === Control loop (AUTO setpoint ~ every 0.1s) ===
+-- === Control loop (AUTO input ~0.1s) ===
 local CONTROL_INTERVAL = 0.10
 local lastSet = nil
 local smoothAlpha = 0.30
@@ -215,7 +223,6 @@ local function controlLoop()
     if ev == "timer" and id == t then
       local info = reactor.getReactorInfo()
       if info then
-        -- Quick charge/activate helpers (only flow here; safety in UI loop)
         if info.status == "charging" then
           inputGate.setSignalLowFlow(900000)
           lastSet = nil
@@ -248,7 +255,6 @@ local function update()
     ri = reactor.getReactorInfo()
     if ri == nil then error("reactor has an invalid setup") end
 
-    -- Status color
     local statusColor = colors.red
     if     ri.status == "online"  or ri.status == "charged" then statusColor = colors.green
     elseif ri.status == "offline"                           then statusColor = colors.gray
@@ -258,20 +264,14 @@ local function update()
     f.draw_text_lr(mon, 2, 2, 1, "Reactor Status", string.upper(ri.status), colors.white, statusColor, colors.black)
     f.draw_text_lr(mon, 2, 4, 1, "Generation", f.format_int(ri.generationRate or 0) .. " rf/t", colors.white, colors.lime, colors.black)
 
-    -- Temperature
     local tempColor = colors.red
-    if ri.temperature <= 5000 then
-      tempColor = colors.green
-    elseif ri.temperature <= 6500 then
-      tempColor = colors.orange
-    end
+    if ri.temperature <= 5000 then tempColor = colors.green
+    elseif ri.temperature <= 6500 then tempColor = colors.orange end
     f.draw_text_lr(mon, 2, 6, 1, "Temperature", f.format_int(ri.temperature or 0) .. "C", colors.white, tempColor, colors.black)
 
-    -- Output gate row
     f.draw_text_lr(mon, 2, 7, 1, "Output Gate", f.format_int(outputGate.getSignalLowFlow()) .. " rf/t", colors.white, colors.blue, colors.black)
     drawButtons(8)
 
-    -- Input gate row
     f.draw_text_lr(mon, 2, 9, 1, "Input Gate", f.format_int(inputGate.getSignalLowFlow()) .. " rf/t", colors.white, colors.blue, colors.black)
     if autoInputGate == 1 then
       f.draw_text(mon, 14, 10, "AU", colors.white, colors.gray)
@@ -280,7 +280,6 @@ local function update()
       drawButtons(10)
     end
 
-    -- Percentages
     local satPercent   = math.ceil((ri.energySaturation or 0) / (ri.maxEnergySaturation or 1) * 10000) * 0.01
     f.draw_text_lr(mon, 2, 11, 1, "Energy Saturation", string.format("%.2f%%", satPercent), colors.white, colors.white, colors.black)
     f.progress_bar(mon, 2, 12, mon.X-2, satPercent, 100, colors.blue, colors.gray)
@@ -307,9 +306,7 @@ local function update()
     f.draw_text_lr(mon, 2, 19, 1, "Action", action, colors.gray, colors.gray, colors.black)
 
     -- Safeguards
-    if emergencyCharge == true then
-      reactor.chargeReactor()
-    end
+    if emergencyCharge == true then reactor.chargeReactor() end
 
     if ri.status == "charging" then
       inputGate.setSignalLowFlow(900000)
