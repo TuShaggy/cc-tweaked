@@ -270,20 +270,4 @@ local function update()
 
     -- reactor interaction / safeguards
     if emergencyCharge then reactor.chargeReactor() end
-    if ri.status == "charging" then inputfluxgate.setSignalLowFlow(900000) emergencyCharge = false end
-    if emergencyTemp and ri.status == "stopping" and ri.temperature < safeTemperature then reactor.activateReactor() emergencyTemp = false end
-    if ri.status == "charged" and activateOnCharged == 1 then reactor.activateReactor() end
-
-    if fuelPercent <= 10 then reactor.stopReactor() action = "Fuel below 10%, refuel" end
-    if fieldPercent <= lowestFieldPercent and ri.status == "online" then
-      action = "Field Str < " .. lowestFieldPercent .. "%"
-      reactor.stopReactor() reactor.chargeReactor() emergencyCharge = true
-    end
-    if ri.temperature > maxTemperature then reactor.stopReactor() action = "Temp > " .. maxTemperature emergencyTemp = true end
-
-    monitor.setVisible(true)
-    sleep(0.05) -- small delay; updates ~20 FPS and keeps AUTO responsive
-  end
-end
-
-parallel.waitForAny(buttons, update)
+    if ri.sta
