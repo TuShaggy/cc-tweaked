@@ -1,4 +1,4 @@
--- lib/f.lua  (unchanged utility lib used by the controller)
+-- lib/f.lua  (utilities)
 
 -- peripheral identification
 function periphSearch(ptype)
