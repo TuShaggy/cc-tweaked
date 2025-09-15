@@ -1,15 +1,14 @@
 -- ============================================
--- Draconic Reactor Controller + Mode Buttons
--- Keeps field at target (%) with:
---   input_flow = fieldDrainRate / (1 - target/100)
--- Adds big simple MODE buttons on the main screen:
---   AUTO (optimize), MAX, STABLE, ECO, CHARGE, COOL
--- Output gate is auto-regulated to a temp setpoint per mode.
+-- Draconic Reactor Controller + Bottom Mode Buttons (Fixed Layout)
+-- - Field input flow: fieldDrainRate / (1 - target/100) (smoothed)
+-- - Output flow auto-regulates temperature per mode
+-- - Big mode buttons anchored at the BOTTOM (with bottom margin)
+-- - Continuous updates (timed control loops + frequent UI refresh)
 -- ============================================
 
--- === Modifiable ===
+-- === User settings ===
 local reactorSide        = "back"
-local targetStrength     = 50    -- default % for STABLE / manual
+local targetStrength     = 50    -- used for STABLE (and as default manual target)
 local maxTemperature     = 8000
 local safeTemperature    = 3000
 local lowestFieldPercent = 15
@@ -30,9 +29,9 @@ end
 loadF()
 
 -- === State / config ===
-local version       = "0.80-modes"
+local version       = "0.90-bottom-buttons"
 local autoInputGate = 1           -- 1=AUTO field control, 0=MANUAL
-local curInputGate  = 222000      -- manual input gate setpoint (rf/t)
+local curInputGate  = 222000      -- manual input gate (rf/t)
 
 -- Peripherals / UI
 local reactor
@@ -61,9 +60,9 @@ local MODE_COOL   = "COOL"
 
 local currentMode = MODE_STABLE
 
--- Runtime control params (computed from mode)
+-- Runtime control params
 local fieldTargetRuntime = targetStrength
-local autoFieldMin, autoFieldMax = 30, 65   -- for AUTO
+local autoFieldMin, autoFieldMax = 30, 65   -- for AUTO A/B
 local fieldStep       = 5
 local abPeriod        = 25
 local abWindow        = 4
@@ -75,10 +74,25 @@ local outputFlowMax   = 20000000
 
 -- Smooth input flow
 local lastInputSet    = nil
+local lastInputFlow   = 0
+local currentOutFlow  = 0
 local smoothAlpha     = 0.30
 
--- Layout base Y (push original UI down to fit mode buttons)
-local BASE_Y = 5
+-- ====== Layout (computed to keep buttons at bottom) ======
+local layout = {
+  contentTopY     = 1,  -- computed later
+  outArrowsY      = 0,
+  inArrowsY       = 0,
+  inToggleX1      = 12, -- AU/MA clickable area
+  inToggleX2      = 16,
+  inToggleY       = 0,
+  btnsTopY        = 0,
+  bottomMargin    = 1,  -- keep a free line at bottom
+  btnRows         = 2,
+  btnHeight       = 3,
+  btnSpacingY     = 1,
+  ModeButtons     = {}, -- filled by makeModeButtons()
+}
 
 -- ====== Config I/O ======
 local function save_config()
@@ -89,7 +103,7 @@ local function save_config()
   sw.writeLine(tostring(targetStrength))
   sw.writeLine(tostring(savedInputGateName or ""))
   sw.writeLine(tostring(savedOutputGateName or ""))
-  sw.writeLine(tostring(currentMode)) -- NEW line for mode
+  sw.writeLine(tostring(currentMode)) -- persist mode
   sw.close()
 end
 
@@ -109,7 +123,7 @@ local function load_config()
   sr.close()
 end
 
--- ====== Flow gate picker ======
+-- ====== Gate picker ======
 local function detectFlowGates()
   local names = peripheral.getNames()
   local list = {}
@@ -147,23 +161,20 @@ local function menuPick(title, options, preselect)
 end
 
 local function ensureGates()
-  -- Try saved first
-  if savedInputGateName then inputGate  = peripheral.wrap(savedInputGateName) end
+  if savedInputGateName  then inputGate  = peripheral.wrap(savedInputGateName) end
   if savedOutputGateName then outputGate = peripheral.wrap(savedOutputGateName) end
   if inputGate and outputGate then return end
 
   local gates = detectFlowGates()
   if #gates < 2 then error("Need at least 2 flow gates (get/setSignalLowFlow).") end
 
-  print("")
-  print("Select gate that FEEDS the reactor field (INPUT to reactor).")
+  print("\nSelect gate that FEEDS the reactor field (INPUT to reactor).")
   local inName = menuPick("INPUT Flow Gate", gates, savedInputGateName)
 
   local remaining = {}
   for _, n in ipairs(gates) do if n ~= inName then table.insert(remaining, n) end end
 
-  print("")
-  print("Select gate that EXTRACTS energy FROM the reactor (OUTPUT).")
+  print("\nSelect gate that EXTRACTS energy FROM the reactor (OUTPUT).")
   local outName = menuPick("OUTPUT Flow Gate", remaining, savedOutputGateName)
 
   savedInputGateName  = inName
@@ -193,7 +204,7 @@ mon = { monitor = monitor, X = monX, Y = monY }
 load_config()
 ensureGates()
 
--- ====== Mode -> params ======
+-- ====== Mode params ======
 local function applyModeParams()
   if currentMode == MODE_AUTO then
     autoFieldMin, autoFieldMax = 30, 65
@@ -215,35 +226,39 @@ local function applyModeParams()
 end
 applyModeParams()
 
--- ====== Drawing helpers ======
-local function drawArrows(y)
-  f.draw_text(mon,  2, y, " < ",  colors.white, colors.gray)
-  f.draw_text(mon,  6, y, " <<",  colors.white, colors.gray)
-  f.draw_text(mon, 10, y, "<<<",  colors.white, colors.gray)
-  f.draw_text(mon, 17, y, ">>>",  colors.white, colors.gray)
-  f.draw_text(mon, 21, y, ">> ",  colors.white, colors.gray)
-  f.draw_text(mon, 25, y, " > ",  colors.white, colors.gray)
-end
+-- ====== Layout & Buttons at bottom ======
+local function makeModeButtons()
+  layout.ModeButtons = {}
+  -- compute bottom area start
+  local bottomH = layout.btnRows*layout.btnHeight + (layout.btnRows-1)*layout.btnSpacingY
+  layout.btnsTopY = monY - bottomH - layout.bottomMargin + 1
+  if layout.btnsTopY < 6 then layout.btnsTopY = 6 end -- avoid absurdly small screens
 
--- Mode buttons (two rows of 3 centered)
-local ModeButtons = {} -- {x,y,w,h,label}
-local function layoutModeButtons()
-  ModeButtons = {}
+  -- compute content top so content fits above buttons with one spacer line
+  -- content block uses 17 lines (0..16 relative)
+  local contentH = 17
+  layout.contentTopY = math.max(1, layout.btnsTopY - contentH - 1)
+
+  -- compute y for rows that have arrows/toggle
+  layout.outArrowsY = layout.contentTopY + 6
+  layout.inArrowsY  = layout.contentTopY + 8
+  layout.inToggleY  = layout.inArrowsY
+
+  -- place 6 buttons in 2 rows x 3 cols
   local labels = {MODE_AUTO, MODE_MAX, MODE_STABLE, MODE_ECO, MODE_CHARGE, MODE_COOL}
   local cols, rows = 3, 2
   local marginX = 2
-  local spacing = 2
-  local bw = math.max(8, math.floor((monX - marginX*2 - spacing*(cols-1)) / cols))
-  local bh = 3
+  local spacingX = 2
+  local bw = math.max(8, math.floor((monX - marginX*2 - spacingX*(cols-1)) / cols))
+  local bh = layout.btnHeight
   for i, label in ipairs(labels) do
     local col = ((i-1) % cols)
     local row = math.floor((i-1) / cols)
-    local x = marginX + col*(bw + spacing)
-    local y = 1 + row*(bh + 1)  -- occupy lines 1..4
-    table.insert(ModeButtons, {x=x, y=y, w=bw, h=bh, label=label})
+    local x = marginX + col*(bw + spacingX)
+    local y = layout.btnsTopY + row*(bh + layout.btnSpacingY)
+    table.insert(layout.ModeButtons, {x=x, y=y, w=bw, h=bh, label=label})
   end
 end
-layoutModeButtons()
 
 local function rect(x,y,w,h,color)
   for dy=0,h-1 do f.draw_line(mon, x, y+dy, w, color) end
@@ -256,17 +271,26 @@ local function drawModeButton(b, active)
   f.draw_text(mon, lx, ly, b.label, colors.white, colors.black)
 end
 
-local function pointIn(b, x, y)
-  return x >= b.x and x <= (b.x+b.w-1) and y >= b.y and y <= (b.y+b.h-1)
+local function pointIn(b, x, y) return x>=b.x and x<=b.x+b.w-1 and y>=b.y and y<=b.y+b.h-1 end
+
+local function drawArrows(y)
+  f.draw_text(mon,  2, y, " < ",  colors.white, colors.gray)
+  f.draw_text(mon,  6, y, " <<",  colors.white, colors.gray)
+  f.draw_text(mon, 10, y, "<<<",  colors.white, colors.gray)
+  f.draw_text(mon, 17, y, ">>>",  colors.white, colors.gray)
+  f.draw_text(mon, 21, y, ">> ",  colors.white, colors.gray)
+  f.draw_text(mon, 25, y, " > ",  colors.white, colors.gray)
 end
 
--- ====== Buttons handler ======
+makeModeButtons() -- initial
+
+-- ====== Buttons handler (touch) ======
 local function buttons()
   while true do
     local _, _, xPos, yPos = os.pullEvent("monitor_touch")
 
-    -- First: check mode buttons
-    for _, b in ipairs(ModeButtons) do
+    -- Mode buttons at bottom
+    for _, b in ipairs(layout.ModeButtons) do
       if pointIn(b, xPos, yPos) then
         currentMode = b.label
         applyModeParams()
@@ -277,7 +301,7 @@ local function buttons()
     end
 
     -- OUTPUT gate controls (arrows row)
-    if yPos == (BASE_Y + 6) then
+    if yPos == layout.outArrowsY then
       local c = outputGate.getSignalLowFlow()
       if     xPos >=  2 and xPos <=  4 then c = c - 1000
       elseif xPos >=  6 and xPos <=  9 then c = c - 10000
@@ -291,7 +315,7 @@ local function buttons()
     end
 
     -- INPUT gate controls (manual only)
-    if yPos == (BASE_Y + 8) and autoInputGate == 0 and xPos ~= 14 and xPos ~= 15 then
+    if yPos == layout.inArrowsY and autoInputGate == 0 and not (xPos >= layout.inToggleX1 and xPos <= layout.inToggleX2) then
       if     xPos >=  2 and xPos <=  4 then curInputGate = curInputGate - 1000
       elseif xPos >=  6 and xPos <=  9 then curInputGate = curInputGate - 10000
       elseif xPos >= 10 and xPos <= 12 then curInputGate = curInputGate - 100000
@@ -301,11 +325,12 @@ local function buttons()
       end
       if curInputGate < 0 then curInputGate = 0 end
       inputGate.setSignalLowFlow(curInputGate)
+      lastInputFlow = curInputGate
       save_config()
     end
 
-    -- INPUT AUTO/MANUAL toggle
-    if yPos == (BASE_Y + 8) and (xPos == 14 or xPos == 15) then
+    -- INPUT AUTO/MANUAL toggle (wider clickable area)
+    if yPos == layout.inToggleY and xPos >= layout.inToggleX1 and xPos <= layout.inToggleX2 then
       autoInputGate = 1 - autoInputGate
       if autoInputGate == 0 then inputGate.setSignalLowFlow(curInputGate) end
       save_config()
@@ -315,12 +340,7 @@ local function buttons()
   end
 end
 
--- ====== Control loops ======
-local CONTROL_INTERVAL = 0.10
-local OUTPUT_INTERVAL  = 0.20
-local lastSetOutput    = nil
-local currentOutFlow   = 0
-
+-- ====== Helpers ======
 local function clamp(x,a,b) if x<a then return a elseif x>b then return b else return x end end
 local function round(x) return math.floor(x + 0.5) end
 
@@ -355,6 +375,10 @@ local function fieldPercent(info)
   return (info.fieldStrength / info.maxFieldStrength) * 100
 end
 
+-- ====== Control loops ======
+local CONTROL_INTERVAL = 0.10
+local OUTPUT_INTERVAL  = 0.20
+
 -- Input (field) controller
 local function inputLoop()
   local t = os.startTimer(CONTROL_INTERVAL)
@@ -365,22 +389,22 @@ local function inputLoop()
       if info then
         if info.status == "charging" or currentMode == MODE_CHARGE then
           inputGate.setSignalLowFlow(900000)
-          lastInputSet = nil
+          lastInputSet  = nil
+          lastInputFlow = 900000
         elseif currentMode == MODE_COOL then
-          -- keep field comfortably high while cooling
           local base = inputNeeded(info, 65)
           inputGate.setSignalLowFlow(base)
-          lastInputSet = base
+          lastInputSet  = base
+          lastInputFlow = base
         elseif info.status == "online" then
           local target = fieldTargetRuntime
-          if autoInputGate == 0 then
-            target = targetStrength -- manual mode sticks to targetStrength
-          end
+          if autoInputGate == 0 then target = targetStrength end
           local base = inputNeeded(info, target)
           if lastInputSet then base = lastInputSet*(1 - smoothAlpha) + base*smoothAlpha end
           base = round(base)
           inputGate.setSignalLowFlow(base)
-          lastInputSet = base
+          lastInputSet  = base
+          lastInputFlow = base
         end
       end
       t = os.startTimer(CONTROL_INTERVAL)
@@ -390,6 +414,7 @@ end
 
 -- Output (temperature) controller
 local function outputLoop()
+  currentOutFlow = outputGate.getSignalLowFlow()
   local tt = os.startTimer(OUTPUT_INTERVAL)
   while true do
     local ev, id = os.pullEvent()
@@ -397,11 +422,9 @@ local function outputLoop()
       local info = reactor.getReactorInfo()
       if info then
         if currentMode == MODE_CHARGE then
-          outputGate.setSignalLowFlow(0)
-          currentOutFlow = 0
+          outputGate.setSignalLowFlow(0); currentOutFlow = 0
         elseif currentMode == MODE_COOL then
-          outputGate.setSignalLowFlow(outputFlowMax)
-          currentOutFlow = outputFlowMax
+          outputGate.setSignalLowFlow(outputFlowMax); currentOutFlow = outputFlowMax
         elseif info.status ~= "offline" then
           local err = (info.temperature or 0) - tempTarget
           local newOut = clamp((currentOutFlow or 0) + err*tempKp, 0, outputFlowMax)
@@ -444,7 +467,6 @@ local function optimizerLoop()
         fieldTargetRuntime = clamp(fieldTargetRuntime, autoFieldMin, autoFieldMax)
       end
     else
-      -- fixed targets per mode
       if currentMode == MODE_MAX then       fieldTargetRuntime = 48
       elseif currentMode == MODE_STABLE then fieldTargetRuntime = 50
       elseif currentMode == MODE_ECO then    fieldTargetRuntime = 60
@@ -452,7 +474,7 @@ local function optimizerLoop()
       sleep(0.2)
     end
 
-    -- extra safety
+    -- safety nudges
     local info = reactor.getReactorInfo()
     if info then
       local fp = fieldPercent(info)
@@ -474,113 +496,100 @@ local function optimizerLoop()
   end
 end
 
--- ====== Main UI update (flicker-free) ======
+-- ====== UI update (flicker-free & bottom buttons) ======
+local function drawUI()
+  monitor.setVisible(false)
+  f.clear(mon)
+
+  -- draw mode buttons at bottom
+  for _, b in ipairs(layout.ModeButtons) do
+    drawModeButton(b, b.label == currentMode)
+  end
+
+  ri = reactor.getReactorInfo()
+  if ri == nil then error("reactor has an invalid setup") end
+
+  -- Status color
+  local statusColor = colors.red
+  if     ri.status == "online"  or ri.status == "charged" then statusColor = colors.green
+  elseif ri.status == "offline"                           then statusColor = colors.gray
+  elseif ri.status == "charging"                          then statusColor = colors.orange
+  end
+
+  local y = layout.contentTopY
+
+  f.draw_text_lr(mon, 2, y+0, 1, "Reactor Status", string.upper(ri.status), colors.white, statusColor, colors.black)
+  f.draw_text_lr(mon, 2, y+2, 1, "Generation", f.format_int(ri.generationRate or 0) .. " rf/t", colors.white, colors.lime, colors.black)
+
+  local tempColor = colors.red
+  if ri.temperature <= 5000 then tempColor = colors.green
+  elseif ri.temperature <= 6500 then tempColor = colors.orange end
+  f.draw_text_lr(mon, 2, y+4, 1, "Temperature", f.format_int(ri.temperature or 0) .. "C", colors.white, tempColor, colors.black)
+
+  -- Output gate row
+  f.draw_text_lr(mon, 2, y+5, 1, "Output Gate", f.format_int(outputGate.getSignalLowFlow()) .. " rf/t", colors.white, colors.blue, colors.black)
+  drawArrows(layout.outArrowsY)
+
+  -- Input gate row
+  f.draw_text_lr(mon, 2, y+7, 1, "Input Gate", f.format_int(inputGate.getSignalLowFlow()) .. " rf/t", colors.white, colors.blue, colors.black)
+  -- AU/MA toggle button area (just draw the label)
+  f.draw_text(mon, layout.inToggleX1+1, layout.inToggleY, (autoInputGate==1 and "AU" or "MA"), colors.white, colors.gray)
+  if autoInputGate == 0 then drawArrows(layout.inArrowsY) end
+
+  -- Energy saturation
+  local satPercent = math.ceil((ri.energySaturation or 0) / (ri.maxEnergySaturation or 1) * 10000) * 0.01
+  f.draw_text_lr(mon, 2, y+9, 1, "Energy Saturation", string.format("%.2f%%", satPercent), colors.white, colors.white, colors.black)
+  f.progress_bar(mon, 2, y+10, mon.X-2, satPercent, 100, colors.blue, colors.gray)
+
+  -- Field %
+  local fieldPct = math.ceil((ri.fieldStrength or 0) / (ri.maxFieldStrength or 1) * 10000) * 0.01
+  local fieldColor = colors.red
+  if fieldPct >= 50 then fieldColor = colors.green
+  elseif fieldPct > 30 then fieldColor = colors.orange end
+
+  local fieldTitle = (autoInputGate==1) and ("Field Strength ("..currentMode..")") or "Field Strength"
+  f.draw_text_lr(mon, 2, y+12, 1, fieldTitle, string.format("%.2f%%", fieldPct), colors.white, fieldColor, colors.black)
+  f.progress_bar(mon, 2, y+13, mon.X-2, fieldPct, 100, fieldColor, colors.gray)
+
+  -- Fuel
+  local fuelPercent = 100 - math.ceil((ri.fuelConversion or 0) / (ri.maxFuelConversion or 1) * 10000) * 0.01
+  local fuelColor = colors.red
+  if fuelPercent >= 70 then fuelColor = colors.green
+  elseif fuelPercent > 30 then fuelColor = colors.orange end
+
+  f.draw_text_lr(mon, 2, y+15, 1, "Fuel", string.format("%.2f%%", fuelPercent), colors.white, fuelColor, colors.black)
+  f.progress_bar(mon, 2, y+16, mon.X-2, fuelPercent, 100, fuelColor, colors.gray)
+
+  f.draw_text_lr(mon, 2, y+18, 1, "Action", action, colors.gray, colors.gray, colors.black)
+
+  -- Safeguards (quick hooks here too)
+  if emergencyCharge == true then reactor.chargeReactor() end
+  if ri.status == "charging" then inputGate.setSignalLowFlow(900000); emergencyCharge = false end
+  if emergencyTemp == true and ri.status == "stopping" and ri.temperature < safeTemperature then reactor.activateReactor(); emergencyTemp = false end
+  if ri.status == "charged" and activateOnCharged == 1 and currentMode ~= MODE_COOL then reactor.activateReactor() end
+  if fuelPercent <= 10 then reactor.stopReactor(); action = "Fuel below 10%, refuel" end
+  if fieldPct <= lowestFieldPercent and ri.status == "online" then
+    action = "Field Str < " .. lowestFieldPercent .. "%"
+    reactor.stopReactor(); reactor.chargeReactor(); emergencyCharge = true
+  end
+  if ri.temperature > maxTemperature then reactor.stopReactor(); action = "Temp > " .. maxTemperature; emergencyTemp = true end
+
+  monitor.setVisible(true)
+end
+
 local function update()
   while true do
-    monitor.setVisible(false)
-    f.clear(mon)
-
-    -- draw mode buttons
-    for _, b in ipairs(ModeButtons) do
-      drawModeButton(b, b.label == currentMode)
+    -- re-layout once in case monitor size changed (rare), cheap
+    local mx, my = monitor.getSize()
+    if mx ~= monX or my ~= monY then
+      monX, monY = mx, my
+      mon.X, mon.Y = mx, my
+      makeModeButtons()
     end
-
-    ri = reactor.getReactorInfo()
-    if ri == nil then error("reactor has an invalid setup") end
-
-    -- Status color
-    local statusColor = colors.red
-    if     ri.status == "online"  or ri.status == "charged" then statusColor = colors.green
-    elseif ri.status == "offline"                           then statusColor = colors.gray
-    elseif ri.status == "charging"                          then statusColor = colors.orange
-    end
-
-    -- Rows shifted by BASE_Y
-    f.draw_text_lr(mon, 2, BASE_Y + 0, 1, "Reactor Status", string.upper(ri.status), colors.white, statusColor, colors.black)
-    f.draw_text_lr(mon, 2, BASE_Y + 2, 1, "Generation", f.format_int(ri.generationRate or 0) .. " rf/t", colors.white, colors.lime, colors.black)
-
-    local tempColor = colors.red
-    if ri.temperature <= 5000 then tempColor = colors.green
-    elseif ri.temperature <= 6500 then tempColor = colors.orange end
-    f.draw_text_lr(mon, 2, BASE_Y + 4, 1, "Temperature", f.format_int(ri.temperature or 0) .. "C", colors.white, tempColor, colors.black)
-
-    -- Output row
-    f.draw_text_lr(mon, 2, BASE_Y + 5, 1, "Output Gate", f.format_int(outputGate.getSignalLowFlow()) .. " rf/t", colors.white, colors.blue, colors.black)
-    drawArrows(BASE_Y + 6)
-
-    -- Input row
-    f.draw_text_lr(mon, 2, BASE_Y + 7, 1, "Input Gate", f.format_int(inputGate.getSignalLowFlow()) .. " rf/t", colors.white, colors.blue, colors.black)
-    if autoInputGate == 1 then
-      f.draw_text(mon, 14, BASE_Y + 8, "AU", colors.white, colors.gray)
-    else
-      f.draw_text(mon, 14, BASE_Y + 8, "MA", colors.white, colors.gray)
-      drawArrows(BASE_Y + 8)
-    end
-
-    -- Energy saturation
-    local satPercent = math.ceil((ri.energySaturation or 0) / (ri.maxEnergySaturation or 1) * 10000) * 0.01
-    f.draw_text_lr(mon, 2, BASE_Y + 9, 1, "Energy Saturation", string.format("%.2f%%", satPercent), colors.white, colors.white, colors.black)
-    f.progress_bar(mon, 2, BASE_Y +10, mon.X-2, satPercent, 100, colors.blue, colors.gray)
-
-    -- Field %
-    local fieldPct = math.ceil((ri.fieldStrength or 0) / (ri.maxFieldStrength or 1) * 10000) * 0.01
-    local fieldColor = colors.red
-    if fieldPct >= 50 then fieldColor = colors.green
-    elseif fieldPct > 30 then fieldColor = colors.orange end
-
-    local fieldTitle = (autoInputGate==1) and ("Field Strength ("..currentMode..")") or "Field Strength"
-    f.draw_text_lr(mon, 2, BASE_Y +12, 1, fieldTitle, string.format("%.2f%%", fieldPct), colors.white, fieldColor, colors.black)
-    f.progress_bar(mon, 2, BASE_Y +13, mon.X-2, fieldPct, 100, fieldColor, colors.gray)
-
-    -- Fuel
-    local fuelPercent = 100 - math.ceil((ri.fuelConversion or 0) / (ri.maxFuelConversion or 1) * 10000) * 0.01
-    local fuelColor = colors.red
-    if fuelPercent >= 70 then fuelColor = colors.green
-    elseif fuelPercent > 30 then fuelColor = colors.orange end
-
-    f.draw_text_lr(mon, 2, BASE_Y +15, 1, "Fuel", string.format("%.2f%%", fuelPercent), colors.white, fuelColor, colors.black)
-    f.progress_bar(mon, 2, BASE_Y +16, mon.X-2, fuelPercent, 100, fuelColor, colors.gray)
-
-    f.draw_text_lr(mon, 2, BASE_Y +18, 1, "Action", action, colors.gray, colors.gray, colors.black)
-
-    -- Safeguards (same as before)
-    if emergencyCharge == true then reactor.chargeReactor() end
-
-    if ri.status == "charging" then
-      inputGate.setSignalLowFlow(900000)
-      emergencyCharge = false
-    end
-
-    if emergencyTemp == true and ri.status == "stopping" and ri.temperature < safeTemperature then
-      reactor.activateReactor()
-      emergencyTemp = false
-    end
-
-    if ri.status == "charged" and activateOnCharged == 1 and currentMode ~= MODE_COOL then
-      reactor.activateReactor()
-    end
-
-    if fuelPercent <= 10 then
-      reactor.stopReactor()
-      action = "Fuel below 10%, refuel"
-    end
-
-    if fieldPct <= lowestFieldPercent and ri.status == "online" then
-      action = "Field Str < " .. lowestFieldPercent .. "%"
-      reactor.stopReactor()
-      reactor.chargeReactor()
-      emergencyCharge = true
-    end
-
-    if ri.temperature > maxTemperature then
-      reactor.stopReactor()
-      action = "Temp > " .. maxTemperature
-      emergencyTemp = true
-    end
-
-    monitor.setVisible(true)
+    drawUI()
     sleep(0.05)
   end
 end
 
+-- ====== Run ======
 parallel.waitForAny(buttons, inputLoop, outputLoop, optimizerLoop, update)
