@@ -1,6 +1,6 @@
 -- startup.lua
--- Clean layout: INFO + BARS at top/center, BIG ARROW BUTTONS at the bottom (full width)
--- Same behavior as your good version: AUTO holds field at targetStrength; MANUAL lets you set input flow.
+-- Clean layout: INFO & BARS at top/center, BIG ARROW BUTTONS at the bottom (full width)
+-- AUTO keeps field at targetStrength; MANUAL lets you set input flow with arrows.
 
 -------------------------
 -- User settings
@@ -20,7 +20,7 @@ os.loadAPI("lib/f")
 -------------------------
 -- State
 -------------------------
-local version       = "1.2-layout"
+local version       = "1.2-layout-fix"
 local autoInputGate = 1          -- 1=AUTO, 0=MANUAL
 local curInputGate  = 222000     -- rf/t when MANUAL
 
@@ -96,13 +96,12 @@ local function computeLayout()
   local bottomBlockH = BTN_ROWS*BTN_ROW_H + (BTN_ROWS-1)*BTN_SPACING + BOTTOM_MARGIN
   buttonsTopY = math.max(1, monY - bottomBlockH + 1)
 
-  -- Put info block high and centered top; we’ll anchor our old 2..19 layout to fit before buttons
-  local needed = 19                -- last used line in the “old” layout
+  -- Put info block high and centered top; anchor classic 2..19 layout before buttons
+  local needed = 19
   local topMargin = 2
   if buttonsTopY - 1 >= needed then
     contentTopY = topMargin
   else
-    -- not enough height: compress by shifting up
     contentTopY = 1
   end
 end
@@ -111,41 +110,30 @@ local function drawBottomRow(y)
   for dy=0,BTN_ROW_H-1 do f.draw_line(mon, 1, y+dy, mon.X, colors.gray) end
 end
 
-local function buildArrows(y, withCenterGap)
-  -- create 6 arrows spread to full width; optional center gap (for AUTO/MANUAL toggle)
-  local left  = { "<<<", " <<", " < " }
-  local right = { " > ", ">> ", ">>>"}
-  local gapW  = withCenterGap and 9 or 0   -- room for [ AUTO ] / [ MANUAL ]
-  local yMid  = y + math.floor(BTN_ROW_H/2)
+local function tokenDelta(tok)
+  if tok == " < " then return -1000
+  elseif tok == " <<" then return -10000
+  elseif tok == "<<<" then return -100000
+  elseif tok == " > " then return  1000
+  elseif tok == ">> " then return  10000
+  elseif tok == ">>>" then return  100000
+  else return 0 end
+end
 
-  local function placeSide(tokens, x1, x2, hitsTbl, dir)
-    local total = 0
-    for _,s in ipairs(tokens) do total = total + #s end
-    local spaces = #tokens - 1
-    local width  = x2 - x1 + 1
-    local free   = math.max(0, width - total - spaces)
-    local pad    = math.floor(free / (#tokens + 1))  -- even padding
-    local x = x1 + pad
-    for _, s in ipairs(tokens) do
-      f.draw_text(mon, x, yMid, s, colors.white, colors.gray)
-      table.insert(hitsTbl, {x1=x, x2=x+#s-1, y=yMid, delta=
-        (s==" < " and -1000) or (s==" <<" and -10000) or (s=="<<<" and -100000) or
-        (s==" > " and  1000) or (s==">> " and  10000) or (s==">>>" and  100000) or 0})
-      x = x + #s + pad + 1
-    end
-  end
-
-  outHits, inHits = {}, {} -- cleared by caller right before using
-  if withCenterGap then
-    local leftEnd  = math.floor(monX/2) - math.floor(gapW/2) - 2
-    local rightBeg = math.floor(monX/2) + math.floor(gapW/2) + 2
-    return placeSide(left,  2, leftEnd,  inHits, -1),
-           placeSide(right, rightBeg, monX-1, inHits, 1),
-           yMid
-  else
-    placeSide(left,  2, math.floor(monX/2)-1, outHits, -1)
-    placeSide(right, math.floor(monX/2)+1, monX-1, outHits, 1)
-    return yMid
+local function distributeTokens(tokens, x1, x2, y, hitsTbl)
+  if x2 <= x1 then return end
+  local width = x2 - x1 + 1
+  local total = 0
+  for _,s in ipairs(tokens) do total = total + #s end
+  local gaps = #tokens - 1
+  local free = width - total - gaps
+  if free < 0 then free = 0 end
+  local pad  = math.floor(free / (#tokens + 1))
+  local x = x1 + pad
+  for _, s in ipairs(tokens) do
+    f.draw_text(mon, x, y, s, colors.white, colors.gray)
+    table.insert(hitsTbl, {x1=x, x2=x+#s-1, y=y, delta=tokenDelta(s)})
+    x = x + #s + pad + 1
   end
 end
 
@@ -155,6 +143,7 @@ end
 local function buttons()
   while true do
     local _,_,x,y = os.pullEvent("monitor_touch")
+    local handled = false
 
     -- OUTPUT arrows hit test
     for _,h in ipairs(outHits) do
@@ -162,16 +151,19 @@ local function buttons()
         local v = fluxgate.getSignalLowFlow() + h.delta
         if v < 0 then v = 0 end
         fluxgate.setSignalLowFlow(v)
-        goto next_touch
+        handled = true
+        break
       end
     end
+    if handled then goto continue end
 
     -- Toggle hit test
     if toggleHit and y==toggleHit.y and x>=toggleHit.x1 and x<=toggleHit.x2 then
       autoInputGate = 1 - autoInputGate
       save_config()
-      goto next_touch
+      handled = true
     end
+    if handled then goto continue end
 
     -- INPUT arrows (manual only)
     if autoInputGate == 0 then
@@ -186,7 +178,7 @@ local function buttons()
       end
     end
 
-    ::next_touch::
+    ::continue::
   end
 end
 
@@ -272,46 +264,25 @@ local function drawTopInfo()
 end
 
 local function drawBottomButtons()
-  -- OUTPUT row
+  -- OUTPUT row (full-width stripes)
   drawBottomRow(buttonsTopY)
   outHits = {}
-  local outY = buttonsTopY
-  -- spread arrows full width
-  local outMidY = (function() return (function() local blocks={"<<<"," <<"," < "," > ",">> ",">>>"} local total=0 for _,s in ipairs(blocks) do total=total+#s end total=total+(#blocks-1) local startX=2 local space=math.max(0, (monX-1 - startX +1 - total) / (#blocks+1)) local x=startX+space for _,s in ipairs(blocks) do f.draw_text(mon,x,outY+math.floor(BTN_ROW_H/2),s,colors.white,colors.gray) table.insert(outHits,{x1=x,x2=x+#s-1,y=outY+math.floor(BTN_ROW_H/2), delta=(s==" < " and -1000) or (s==" <<" and -10000) or (s=="<<<" and -100000) or (s==" > " and 1000) or (s==">> " and 10000) or (s==">>>" and 100000) or 0}) x=x+#s+space+1 end end)() end)()
+  local yMidOut = buttonsTopY + math.floor(BTN_ROW_H/2)
+  distributeTokens({ "<<<"," <<"," < "," > ",">> ",">>>" }, 2, monX-1, yMidOut, outHits)
 
-  -- INPUT row (with AUTO/MANUAL toggle centered)
+  -- INPUT row (toggle centered; arrows split left/right)
   drawBottomRow(buttonsTopY + BTN_ROW_H + BTN_SPACING)
-  local inY = buttonsTopY + BTN_ROW_H + BTN_SPACING
   inHits = {}
-  -- center toggle
-  local toggleText = (autoInputGate==1) and "[ AUTO ]" or "[ MANUAL ]"
-  local ty = inY + math.floor(BTN_ROW_H/2)
-  local tx = math.max(2, math.floor(monX/2 - #toggleText/2))
-  toggleHit = {x1=tx, x2=tx+#toggleText-1, y=ty}
-  f.draw_text(mon, tx, ty, toggleText, colors.white, colors.gray)
+  local yMidIn = buttonsTopY + BTN_ROW_H + BTN_SPACING + math.floor(BTN_ROW_H/2)
 
-  -- arrows split left/right around the toggle
-  local left  = { "<<<", " <<", " < " }
-  local right = { " > ", ">> ", ">>>"}
-  local function place(tokens, x1, x2)
-    if x2 - x1 < 6 then return end
-    local total=0 for _,s in ipairs(tokens) do total=total+#s end
-    local spaces = #tokens - 1
-    local width  = x2 - x1 + 1
-    local free   = math.max(0, width - total - spaces)
-    local pad    = math.floor(free / (#tokens + 1))
-    local x = x1 + pad
-    for _,s in ipairs(tokens) do
-      f.draw_text(mon, x, ty, s, colors.white, colors.gray)
-      table.insert(inHits, {x1=x, x2=x+#s-1, y=ty,
-        delta=(s==" < " and -1000) or (s==" <<" and -10000) or (s=="<<<" and -100000) or
-              (s==" > " and  1000) or (s==">> " and  10000) or (s==">>>" and  100000) or 0})
-      x = x + #s + pad + 1
-    end
-  end
+  local toggleText = (autoInputGate==1) and "[ AUTO ]" or "[ MANUAL ]"
+  local tx = math.max(2, math.floor(monX/2 - #toggleText/2))
+  toggleHit = {x1=tx, x2=tx+#toggleText-1, y=yMidIn}
+  f.draw_text(mon, tx, yMidIn, toggleText, colors.white, colors.gray)
+
   local gap = 2
-  place(left, 2, tx - gap)
-  place(right, toggleHit.x2 + gap, monX - 1)
+  distributeTokens({ "<<<"," <<"," < " }, 2, math.max(2, tx - gap), yMidIn, inHits)
+  distributeTokens({ " > ",">> ",">>>" }, math.min(monX-1, toggleHit.x2 + gap), monX-1, yMidIn, inHits)
 end
 
 -------------------------
