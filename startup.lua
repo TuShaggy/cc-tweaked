@@ -1,8 +1,8 @@
 -- ============================================
--- Draconic Reactor Controller + Bottom Mode Buttons (Fixed Layout)
+-- Draconic Reactor Controller + Bottom Mode Buttons (Fixed & Working)
 -- - Field input flow: fieldDrainRate / (1 - target/100) (smoothed)
 -- - Output flow auto-regulates temperature per mode
--- - Big mode buttons anchored at the BOTTOM (with bottom margin)
+-- - Big mode buttons ANCHORED AT THE BOTTOM (with bottom margin)
 -- - Continuous updates (timed control loops + frequent UI refresh)
 -- ============================================
 
@@ -29,7 +29,7 @@ end
 loadF()
 
 -- === State / config ===
-local version       = "0.90-bottom-buttons"
+local version       = "0.95-bottom-fixed"
 local autoInputGate = 1           -- 1=AUTO field control, 0=MANUAL
 local curInputGate  = 222000      -- manual input gate (rf/t)
 
@@ -78,20 +78,20 @@ local lastInputFlow   = 0
 local currentOutFlow  = 0
 local smoothAlpha     = 0.30
 
--- ====== Layout (computed to keep buttons at bottom) ======
+-- ====== Layout (BOTTOM buttons) ======
 local layout = {
-  contentTopY     = 1,  -- computed later
-  outArrowsY      = 0,
-  inArrowsY       = 0,
-  inToggleX1      = 12, -- AU/MA clickable area
-  inToggleX2      = 16,
-  inToggleY       = 0,
-  btnsTopY        = 0,
-  bottomMargin    = 1,  -- keep a free line at bottom
-  btnRows         = 2,
-  btnHeight       = 3,
-  btnSpacingY     = 1,
-  ModeButtons     = {}, -- filled by makeModeButtons()
+  contentTopY   = 1,  -- computed later
+  outArrowsY    = 0,
+  inArrowsY     = 0,
+  inToggleX1    = 10, -- AU/MA clickable area (wider)
+  inToggleX2    = 18,
+  inToggleY     = 0,
+  btnsTopY      = 0,
+  bottomMargin  = 1,  -- keep a free line at bottom
+  btnRows       = 2,
+  btnHeight     = 3,
+  btnSpacingY   = 1,
+  ModeButtons   = {}, -- filled by makeModeButtons()
 }
 
 -- ====== Config I/O ======
@@ -226,35 +226,44 @@ local function applyModeParams()
 end
 applyModeParams()
 
--- ====== Layout & Buttons at bottom ======
+-- ====== Layout & Buttons at BOTTOM (absolute) ======
 local function makeModeButtons()
   layout.ModeButtons = {}
-  -- compute bottom area start
-  local bottomH = layout.btnRows*layout.btnHeight + (layout.btnRows-1)*layout.btnSpacingY
-  layout.btnsTopY = monY - bottomH - layout.bottomMargin + 1
-  if layout.btnsTopY < 6 then layout.btnsTopY = 6 end -- avoid absurdly small screens
 
-  -- compute content top so content fits above buttons with one spacer line
-  -- content block uses 17 lines (0..16 relative)
-  local contentH = 17
-  layout.contentTopY = math.max(1, layout.btnsTopY - contentH - 1)
+  -- Bottom block height: 2 rows of buttons + spacing + bottom margin
+  local bottomBlockH = layout.btnRows*layout.btnHeight + (layout.btnRows-1)*layout.btnSpacingY + layout.bottomMargin
+  -- Top Y of buttons area
+  layout.btnsTopY = math.max(1, monY - bottomBlockH - 0 + 1)  -- keep last line as margin
 
-  -- compute y for rows that have arrows/toggle
-  layout.outArrowsY = layout.contentTopY + 6
-  layout.inArrowsY  = layout.contentTopY + 8
+  -- Content area: everything above buttons area minus 1 spacer line
+  local spacer = 1
+  layout.contentTopY = 1
+  -- We'll place arrows/toggles relative to contentTopY later
+  layout.outArrowsY = layout.btnsTopY - (spacer + 11)  -- ensure arrows are far above buttons
+  layout.inArrowsY  = layout.outArrowsY + 2
   layout.inToggleY  = layout.inArrowsY
 
-  -- place 6 buttons in 2 rows x 3 cols
+  if layout.outArrowsY < 6 then
+    layout.outArrowsY = 6
+    layout.inArrowsY  = 8
+    layout.inToggleY  = 8
+    layout.contentTopY = 1
+  end
+
+  -- 6 buttons in 2x3 grid centered horizontally
   local labels = {MODE_AUTO, MODE_MAX, MODE_STABLE, MODE_ECO, MODE_CHARGE, MODE_COOL}
   local cols, rows = 3, 2
-  local marginX = 2
   local spacingX = 2
-  local bw = math.max(8, math.floor((monX - marginX*2 - spacingX*(cols-1)) / cols))
+  local totalColsWidth = monX - 4  -- side margin of 2 chars each side
+  local bw = math.max(8, math.floor((totalColsWidth - spacingX*(cols-1)) / cols))
+  local startX = math.floor((monX - (bw*cols + spacingX*(cols-1))) / 2) + 1
+  if startX < 2 then startX = 2 end
+
   local bh = layout.btnHeight
   for i, label in ipairs(labels) do
     local col = ((i-1) % cols)
     local row = math.floor((i-1) / cols)
-    local x = marginX + col*(bw + spacingX)
+    local x = startX + col*(bw + spacingX)
     local y = layout.btnsTopY + row*(bh + layout.btnSpacingY)
     table.insert(layout.ModeButtons, {x=x, y=y, w=bw, h=bh, label=label})
   end
@@ -274,15 +283,22 @@ end
 local function pointIn(b, x, y) return x>=b.x and x<=b.x+b.w-1 and y>=b.y and y<=b.y+b.h-1 end
 
 local function drawArrows(y)
-  f.draw_text(mon,  2, y, " < ",  colors.white, colors.gray)
-  f.draw_text(mon,  6, y, " <<",  colors.white, colors.gray)
-  f.draw_text(mon, 10, y, "<<<",  colors.white, colors.gray)
-  f.draw_text(mon, 17, y, ">>>",  colors.white, colors.gray)
-  f.draw_text(mon, 21, y, ">> ",  colors.white, colors.gray)
-  f.draw_text(mon, 25, y, " > ",  colors.white, colors.gray)
+  -- center the arrows region relative to screen width
+  local blocks = {" < ", " <<", "<<<", ">>>", ">> ", " > "}
+  local totalW = 0
+  for _,s in ipairs(blocks) do totalW = totalW + #s end
+  local gaps = 5
+  totalW = totalW + gaps -- single space between each
+  local startX = math.max(2, math.floor((monX - totalW)/2))
+
+  local x = startX
+  for i,s in ipairs(blocks) do
+    f.draw_text(mon, x, y, s, colors.white, colors.gray)
+    x = x + #s + 1
+  end
 end
 
-makeModeButtons() -- initial
+makeModeButtons() -- initial build
 
 -- ====== Buttons handler (touch) ======
 local function buttons()
@@ -300,40 +316,70 @@ local function buttons()
       end
     end
 
-    -- OUTPUT gate controls (arrows row)
+    -- OUTPUT gate controls (arrow row)
     if yPos == layout.outArrowsY then
       local c = outputGate.getSignalLowFlow()
-      if     xPos >=  2 and xPos <=  4 then c = c - 1000
-      elseif xPos >=  6 and xPos <=  9 then c = c - 10000
-      elseif xPos >= 10 and xPos <= 12 then c = c - 100000
-      elseif xPos >= 17 and xPos <= 19 then c = c + 100000
-      elseif xPos >= 21 and xPos <= 23 then c = c + 10000
-      elseif xPos >= 25 and xPos <= 27 then c = c + 1000
+      local s = monX -- compute centered arrow x ranges again for touch
+      -- Recreate same layout math to detect which arrow was pressed
+      local blocks = {
+        {label=" < ",  delta=-1000},
+        {label=" <<",  delta=-10000},
+        {label="<<<",  delta=-100000},
+        {label=">>>",  delta= 100000},
+        {label=">> ",  delta= 10000},
+        {label=" > ",  delta= 1000},
+      }
+      local totalW = 0; for _,bk in ipairs(blocks) do totalW = totalW + #bk.label end; totalW = totalW + 5
+      local startX = math.max(2, math.floor((monX - totalW)/2))
+      local x = startX
+      for _,bk in ipairs(blocks) do
+        local x1, x2 = x, x + #bk.label - 1
+        if xPos >= x1 and xPos <= x2 then
+          c = c + bk.delta
+          break
+        end
+        x = x2 + 2
       end
       if c < 0 then c = 0 end
       outputGate.setSignalLowFlow(c)
+      goto NEXT_TOUCH_DONE
     end
 
     -- INPUT gate controls (manual only)
     if yPos == layout.inArrowsY and autoInputGate == 0 and not (xPos >= layout.inToggleX1 and xPos <= layout.inToggleX2) then
-      if     xPos >=  2 and xPos <=  4 then curInputGate = curInputGate - 1000
-      elseif xPos >=  6 and xPos <=  9 then curInputGate = curInputGate - 10000
-      elseif xPos >= 10 and xPos <= 12 then curInputGate = curInputGate - 100000
-      elseif xPos >= 17 and xPos <= 19 then curInputGate = curInputGate + 100000
-      elseif xPos >= 21 and xPos <= 23 then curInputGate = curInputGate + 10000
-      elseif xPos >= 25 and xPos <= 27 then curInputGate = curInputGate + 1000
+      local s = monX
+      local blocks = {
+        {label=" < ",  delta=-1000},
+        {label=" <<",  delta=-10000},
+        {label="<<<",  delta=-100000},
+        {label=">>>",  delta= 100000},
+        {label=">> ",  delta= 10000},
+        {label=" > ",  delta= 1000},
+      }
+      local totalW = 0; for _,bk in ipairs(blocks) do totalW = totalW + #bk.label end; totalW = totalW + 5
+      local startX = math.max(2, math.floor((monX - totalW)/2))
+      local x = startX
+      for _,bk in ipairs(blocks) do
+        local x1, x2 = x, x + #bk.label - 1
+        if xPos >= x1 and xPos <= x2 then
+          curInputGate = curInputGate + bk.delta
+          break
+        end
+        x = x2 + 2
       end
       if curInputGate < 0 then curInputGate = 0 end
       inputGate.setSignalLowFlow(curInputGate)
       lastInputFlow = curInputGate
       save_config()
+      goto NEXT_TOUCH_DONE
     end
 
-    -- INPUT AUTO/MANUAL toggle (wider clickable area)
+    -- INPUT AUTO/MANUAL toggle (wide area centered)
     if yPos == layout.inToggleY and xPos >= layout.inToggleX1 and xPos <= layout.inToggleX2 then
       autoInputGate = 1 - autoInputGate
       if autoInputGate == 0 then inputGate.setSignalLowFlow(curInputGate) end
       save_config()
+      goto NEXT_TOUCH_DONE
     end
 
     ::NEXT_TOUCH_DONE::
@@ -497,6 +543,10 @@ local function optimizerLoop()
 end
 
 -- ====== UI update (flicker-free & bottom buttons) ======
+local function drawArrowsCentered(y)
+  drawArrows(y)
+end
+
 local function drawUI()
   monitor.setVisible(false)
   f.clear(mon)
@@ -528,13 +578,16 @@ local function drawUI()
 
   -- Output gate row
   f.draw_text_lr(mon, 2, y+5, 1, "Output Gate", f.format_int(outputGate.getSignalLowFlow()) .. " rf/t", colors.white, colors.blue, colors.black)
-  drawArrows(layout.outArrowsY)
+  drawArrowsCentered(layout.outArrowsY)
 
   -- Input gate row
   f.draw_text_lr(mon, 2, y+7, 1, "Input Gate", f.format_int(inputGate.getSignalLowFlow()) .. " rf/t", colors.white, colors.blue, colors.black)
-  -- AU/MA toggle button area (just draw the label)
-  f.draw_text(mon, layout.inToggleX1+1, layout.inToggleY, (autoInputGate==1 and "AU" or "MA"), colors.white, colors.gray)
-  if autoInputGate == 0 then drawArrows(layout.inArrowsY) end
+  -- AU/MA toggle (centered wide area)
+  local toggleText = (autoInputGate==1 and "AUTO" or "MANUAL")
+  local tx = math.floor(monX/2 - #toggleText/2)
+  if tx < layout.inToggleX1 then tx = layout.inToggleX1 + 1 end
+  f.draw_text(mon, tx, layout.inToggleY, toggleText, colors.white, colors.gray)
+  if autoInputGate == 0 then drawArrowsCentered(layout.inArrowsY) end
 
   -- Energy saturation
   local satPercent = math.ceil((ri.energySaturation or 0) / (ri.maxEnergySaturation or 1) * 10000) * 0.01
@@ -579,7 +632,7 @@ end
 
 local function update()
   while true do
-    -- re-layout once in case monitor size changed (rare), cheap
+    -- rebuild layout if monitor size changes
     local mx, my = monitor.getSize()
     if mx ~= monX or my ~= monY then
       monX, monY = mx, my
